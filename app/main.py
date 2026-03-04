@@ -15,10 +15,12 @@ if __package__ in (None, ""):
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from app.file_extract import extract_text_by_filename
+from app.llm import OpenAIAnswerGenerator
 from app.rag import InMemoryKnowledgeBase, SimpleAnswerGenerator
 
 
 kb = InMemoryKnowledgeBase()
+llm_generator = OpenAIAnswerGenerator()
 
 USERS = {
     "admin": {"password": "admin123", "role": "admin"},
@@ -89,6 +91,15 @@ def _parse_multipart_form_data(content_type: str, body: bytes) -> dict[str, tupl
         result[field_name] = (filename, value)
 
     return result
+
+
+def build_answer(question: str, matches: list[tuple]) -> str:
+    if llm_generator.enabled():
+        try:
+            return llm_generator.generate(question, matches)
+        except RuntimeError:
+            pass
+    return SimpleAnswerGenerator.generate(question, matches)
 
 
 class RAGRequestHandler(BaseHTTPRequestHandler):
@@ -324,7 +335,7 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
                 return
 
             matches = kb.retrieve(question, top_k=top_k)
-            answer = SimpleAnswerGenerator.generate(question, matches)
+            answer = build_answer(question, matches)
             self._json_response(
                 HTTPStatus.OK,
                 {
@@ -351,7 +362,7 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             question = form.get("question", "")
             top_k = int(form.get("top_k", "4"))
             matches = kb.retrieve(question, top_k=top_k)
-            answer = SimpleAnswerGenerator.generate(question, matches)
+            answer = build_answer(question, matches)
             source_items = "".join(f"<li><b>{chunk.title}</b> ({score:.2f})<br/>{chunk.text[:180]}</li>" for chunk, score in matches) or "<li>Источники не найдены</li>"
             body = render_html(
                 "Ответ",
