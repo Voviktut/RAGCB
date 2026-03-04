@@ -14,6 +14,7 @@ import uuid
 if __package__ in (None, ""):
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+from app.file_extract import extract_text_by_filename
 from app.rag import InMemoryKnowledgeBase, SimpleAnswerGenerator
 
 
@@ -182,8 +183,8 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
                   <form method='post' action='/documents/form' enctype='multipart/form-data'>
                     <label>Название документа</label>
                     <input name='title' required />
-                    <label>Файл документа (txt/md)</label>
-                    <input type='file' name='document_file' accept='.txt,.md,text/plain' required />
+                    <label>Файл документа (txt/md/docx/pdf)</label>
+                    <input type='file' name='document_file' accept='.txt,.md,.docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain' required />
                     <button type='submit'>Загрузить файл</button>
                   </form>
                 </div>
@@ -255,7 +256,14 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
                 fields = _parse_multipart_form_data(content_type, raw_body)
                 title = fields.get("title", (None, b""))[1].decode("utf-8", errors="ignore").strip()
                 file_name, file_bytes = fields.get("document_file", (None, b""))
-                content = file_bytes.decode("utf-8", errors="ignore").strip()
+                if not file_name:
+                    content = ""
+                else:
+                    try:
+                        content = extract_text_by_filename(file_name, file_bytes)
+                    except ValueError:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "unsupported file format (use txt, md, docx, pdf)"})
+                        return
                 metadata = {"upload_type": "file", "filename": file_name or ""}
             else:
                 payload = self._read_json()
@@ -284,7 +292,14 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             fields = _parse_multipart_form_data(content_type, raw_body)
             title = fields.get("title", (None, b""))[1].decode("utf-8", errors="ignore").strip()
             file_name, file_bytes = fields.get("document_file", (None, b""))
-            content = file_bytes.decode("utf-8", errors="ignore").strip()
+            if file_name:
+                try:
+                    content = extract_text_by_filename(file_name, file_bytes)
+                except ValueError:
+                    self._html_response(HTTPStatus.BAD_REQUEST, render_html("Ошибка", "<h1>Неподдерживаемый формат файла</h1><p>Используйте .txt, .md, .docx или .pdf</p><a href='/app'>Назад</a>"))
+                    return
+            else:
+                content = ""
 
             if not title or not content:
                 self._html_response(HTTPStatus.BAD_REQUEST, render_html("Ошибка", "<h1>Нужны title и файл документа</h1><a href='/app'>Назад</a>"))
