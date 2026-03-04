@@ -15,7 +15,9 @@ OPENAI_API_URL = "https://api.openai.com/v1/responses"
 def _build_context(results: list[tuple[Chunk, float]]) -> str:
     parts: list[str] = []
     for idx, (chunk, score) in enumerate(results, start=1):
-        parts.append(f"[{idx}] {chunk.title} (score={score:.3f})\n{chunk.text}")
+        page = chunk.metadata.get("page", "—")
+        section = chunk.metadata.get("section", "—")
+        parts.append(f"[{idx}] {chunk.title} (score={score:.3f}, page={page}, section={section})\n{chunk.text}")
     return "\n\n".join(parts)
 
 
@@ -46,12 +48,13 @@ class OpenAIAnswerGenerator:
         system = (
             "Ты корпоративный ассистент по внутренней документации. "
             "Отвечай только на основе предоставленного контекста. "
-            "Если данных недостаточно — явно скажи об этом."
+            "Если данных недостаточно — явно скажи об этом. "
+            "Обязательно приводи цитаты и указывай страницу/раздел из контекста."
         )
         user = (
             f"Вопрос сотрудника:\n{question}\n\n"
             f"Контекст из базы знаний:\n{context or 'Контекст пуст.'}\n\n"
-            "Сформируй развернутый ответ на русском и в конце добавь короткий список 'Что уточнить дальше'."
+            "Сформируй развернутый ответ на русском. Для каждого ключевого вывода добавляй: короткую цитату в кавычках и ссылку вида [Источник N, стр. X, раздел Y]. В конце добавь список 'Что уточнить дальше'."
         )
         body = {
             "model": self.model,

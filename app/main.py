@@ -14,7 +14,7 @@ import uuid
 if __package__ in (None, ""):
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from app.file_extract import extract_text_by_filename
+from app.file_extract import extract_segments_by_filename
 from app.llm import OpenAIAnswerGenerator
 from app.rag import InMemoryKnowledgeBase, SimpleAnswerGenerator
 
@@ -271,7 +271,8 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
                     content = ""
                 else:
                     try:
-                        content = extract_text_by_filename(file_name, file_bytes)
+                        segments = extract_segments_by_filename(file_name, file_bytes)
+                        content = "\n".join(seg.text for seg in segments)
                     except ValueError:
                         self._json_response(HTTPStatus.BAD_REQUEST, {"error": "unsupported file format (use txt, md, docx, pdf)"})
                         return
@@ -287,7 +288,10 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
                 return
 
             doc_id = str(uuid.uuid4())
-            chunks = kb.add_document(doc_id, title, content, metadata)
+            if content_type.startswith("multipart/form-data") and file_name:
+                chunks = kb.add_segments(doc_id, title, segments, metadata)
+            else:
+                chunks = kb.add_document(doc_id, title, content, metadata)
             self._json_response(HTTPStatus.OK, {"document_id": doc_id, "chunks_created": chunks, "total_chunks": len(kb.chunks)})
             return
 
@@ -305,7 +309,8 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             file_name, file_bytes = fields.get("document_file", (None, b""))
             if file_name:
                 try:
-                    content = extract_text_by_filename(file_name, file_bytes)
+                    segments = extract_segments_by_filename(file_name, file_bytes)
+                    content = "\n".join(seg.text for seg in segments)
                 except ValueError:
                     self._html_response(HTTPStatus.BAD_REQUEST, render_html("Ошибка", "<h1>Неподдерживаемый формат файла</h1><p>Используйте .txt, .md, .docx или .pdf</p><a href='/app'>Назад</a>"))
                     return
@@ -317,7 +322,7 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
                 return
 
             doc_id = str(uuid.uuid4())
-            chunks = kb.add_document(doc_id, title, content, {"source": "web", "filename": file_name or ""})
+            chunks = kb.add_segments(doc_id, title, segments, {"source": "web", "filename": file_name or ""})
             body = render_html("Документ загружен", f"<h1>Документ загружен</h1><p>Файл: <b>{file_name or 'unknown'}</b></p><p>Чанков создано: <b>{chunks}</b></p><a href='/app'>Назад</a>")
             self._html_response(HTTPStatus.OK, body)
             return

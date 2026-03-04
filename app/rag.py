@@ -18,6 +18,13 @@ class Chunk:
     metadata: dict[str, Any]
 
 
+@dataclass
+class Segment:
+    text: str
+    page: int | None = None
+    section: str | None = None
+
+
 def tokenize(text: str) -> list[str]:
     return [w.lower() for w in WORD_RE.findall(text)]
 
@@ -67,17 +74,30 @@ class InMemoryKnowledgeBase:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> int:
+        return self.add_segments(doc_id, title, [Segment(text=content)], metadata=metadata)
+
+    def add_segments(
+        self,
+        doc_id: str,
+        title: str,
+        segments: list[Segment],
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
         metadata = metadata or {}
-        parts = chunk_text(content)
-        for part in parts:
-            self._chunks.append(Chunk(doc_id=doc_id, title=title, text=part, metadata=metadata))
-        return len(parts)
+        created = 0
+        for seg in segments:
+            part_meta = dict(metadata)
+            if seg.page is not None:
+                part_meta["page"] = seg.page
+            if seg.section:
+                part_meta["section"] = seg.section
+            for part in chunk_text(seg.text):
+                self._chunks.append(Chunk(doc_id=doc_id, title=title, text=part, metadata=part_meta))
+                created += 1
+        return created
 
     def retrieve(self, question: str, top_k: int = 4) -> list[tuple[Chunk, float]]:
-        ranked = [
-            (chunk, cosine_bow(question, chunk.text))
-            for chunk in self._chunks
-        ]
+        ranked = [(chunk, cosine_bow(question, chunk.text)) for chunk in self._chunks]
         ranked.sort(key=lambda x: x[1], reverse=True)
         return [(c, s) for c, s in ranked[:top_k] if s > 0]
 
@@ -90,5 +110,12 @@ class SimpleAnswerGenerator:
 
         lines = [f"Вопрос: {question}", "", "Ответ на основе внутренней документации:"]
         for idx, (chunk, score) in enumerate(results, start=1):
-            lines.append(f"{idx}. [{chunk.title}] ({score:.2f}) {chunk.text[:350]}")
+            quote = chunk.text[:240]
+            page = chunk.metadata.get("page", "—")
+            section = chunk.metadata.get("section", "—")
+            lines.append(
+                f"{idx}. Вывод по источнику [{chunk.title}] (релевантность {score:.2f}). "
+                f"Цитата: «{quote}». Страница: {page}. Раздел: {section}."
+            )
+        lines.append("\nЕсли нужно, могу дать структурированный юридический разбор по пунктам.")
         return "\n".join(lines)

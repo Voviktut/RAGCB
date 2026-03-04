@@ -102,6 +102,7 @@ def test_http_flow_with_roles() -> None:
             assert data["answer"].strip() != ""
             assert len(data["sources"]) >= 1
             assert data["sources"][0]["metadata"].get("filename") == "onboarding.txt"
+            assert data["sources"][0]["metadata"].get("section") is not None or data["sources"][0]["metadata"].get("page") is not None
     finally:
         server.shutdown()
         server.server_close()
