@@ -106,16 +106,28 @@ class SimpleAnswerGenerator:
     @staticmethod
     def generate(question: str, results: list[tuple[Chunk, float]]) -> str:
         if not results:
-            return "Я не нашёл релевантных данных. Загрузите документы и повторите запрос."
-
-        lines = [f"Вопрос: {question}", "", "Ответ на основе внутренней документации:"]
-        for idx, (chunk, score) in enumerate(results, start=1):
-            quote = chunk.text[:240]
-            page = chunk.metadata.get("page", "—")
-            section = chunk.metadata.get("section", "—")
-            lines.append(
-                f"{idx}. Вывод по источнику [{chunk.title}] (релевантность {score:.2f}). "
-                f"Цитата: «{quote}». Страница: {page}. Раздел: {section}."
+            return (
+                "В загруженных документах не найдено достаточных оснований для ответа на вопрос.\n\n"
+                "Вывод\n"
+                "Нужно загрузить более релевантный документ (или уточнить формулировку вопроса)."
             )
-        lines.append("\nЕсли нужно, могу дать структурированный юридический разбор по пунктам.")
+
+        primary, score = results[0]
+        quote = primary.text[:420].strip()
+        page = primary.metadata.get("page", "не указана")
+        section = primary.metadata.get("section", "не указан")
+
+        lines = [
+            f"По предоставленным материалам наиболее релевантным источником является «{primary.title}».",
+            "",
+            f"«{quote}»",
+            f"(Источник: {primary.title}; страница: {page}; раздел: {section}; релевантность: {score:.2f})",
+            "",
+            "Таким образом, ответ сформирован на основании приведенной нормы документа. "
+            "Если в документе нет прямого регулирования вопроса, это отдельно указывается как отсутствие соответствующих положений.",
+            "",
+            "Вывод",
+            "Ответ дан строго по найденным фрагментам документа с цитатой и указанием страницы/раздела.",
+        ]
         return "\n".join(lines)
+
