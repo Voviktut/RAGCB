@@ -5,13 +5,13 @@ RAG-система в виде веб-сайта для внутренней б�
 ## Что уже реализовано
 
 - Веб-интерфейс с авторизацией и ролями:
-  - `admin` — может загружать документы и задавать вопросы.
+  - `admin` — может загружать документы файлами (txt/md) и задавать вопросы.
   - `user` — может только задавать вопросы.
 - HTTP API + HTML-страницы в одном сервисе:
   - `GET /` — страница входа
   - `GET /app` — панель пользователя
   - `GET /health` — health-check
-  - `POST /documents` — загрузка документа (только admin)
+  - `POST /documents` — загрузка документа (JSON или multipart файл, только admin)
   - `POST /ask` — вопрос к базе знаний (авторизованные пользователи)
 - RAG-ядро: чанкирование текста, retrieval по cosine similarity (Bag-of-Words), возврат источников.
 
@@ -51,3 +51,17 @@ curl -X POST http://127.0.0.1:8000/documents \
 - Интеграцию с SSO/LDAP.
 - Подключение LLM и векторной БД.
 - Загрузку PDF/DOCX/Confluence/Notion.
+
+
+## Загрузка файла документа
+
+Через сайт: в панели админа выберите файл (`.txt`/`.md`) и загрузите его.
+
+Через API (multipart/form-data):
+
+```bash
+curl -X POST http://127.0.0.1:8000/documents \
+  -H "Cookie: session_id=<admin_session>" \
+  -F "title=Регламент онбординга" \
+  -F "document_file=@./onboarding.txt;type=text/plain"
+```

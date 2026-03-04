@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import sys
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,10 +11,10 @@ import secrets
 from urllib.parse import parse_qs, urlparse
 import uuid
 
-try:
-    from app.rag import InMemoryKnowledgeBase, SimpleAnswerGenerator
-except ModuleNotFoundError:
-    from rag import InMemoryKnowledgeBase, SimpleAnswerGenerator
+if __package__ in (None, ""):
+    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
+from app.rag import InMemoryKnowledgeBase, SimpleAnswerGenerator
 
 
 kb = InMemoryKnowledgeBase()
@@ -21,6 +24,9 @@ USERS = {
     "employee": {"password": "employee123", "role": "user"},
 }
 SESSIONS: dict[str, dict[str, str]] = {}
+
+
+MULTIPART_BOUNDARY_RE = re.compile(r"boundary=([^;]+)")
 
 
 def render_html(title: str, body: str) -> bytes:
@@ -39,7 +45,6 @@ def render_html(title: str, body: str) -> bytes:
     input, textarea, button, select {{ width: 100%; padding: 10px; margin: 6px 0 12px; border-radius: 8px; border: 1px solid #c9c9c9; box-sizing: border-box; }}
     button {{ background: #1d4ed8; color: #fff; border: none; cursor: pointer; font-weight: 600; }}
     button:hover {{ background: #1e40af; }}
-    .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
     .alert {{ padding: 10px; border-radius: 8px; margin-bottom: 12px; background: #eef2ff; }}
     pre {{ background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; overflow: auto; white-space: pre-wrap; }}
     .tag {{ display: inline-block; background: #e2e8f0; padding: 4px 8px; border-radius: 999px; font-size: 12px; }}
@@ -53,6 +58,36 @@ def render_html(title: str, body: str) -> bytes:
 </body>
 </html>"""
     return html.encode("utf-8")
+
+
+def _parse_multipart_form_data(content_type: str, body: bytes) -> dict[str, tuple[str | None, bytes]]:
+    match = MULTIPART_BOUNDARY_RE.search(content_type)
+    if not match:
+        return {}
+
+    boundary = match.group(1).strip().strip('"').encode("utf-8")
+    delimiter = b"--" + boundary
+    result: dict[str, tuple[str | None, bytes]] = {}
+
+    for part in body.split(delimiter):
+        part = part.strip()
+        if not part or part == b"--":
+            continue
+        if b"\r\n\r\n" not in part:
+            continue
+        header_blob, value_blob = part.split(b"\r\n\r\n", 1)
+        value = value_blob.rstrip(b"\r\n")
+        headers = header_blob.decode("utf-8", errors="ignore").split("\r\n")
+        content_disp = next((h for h in headers if h.lower().startswith("content-disposition:")), "")
+        name_match = re.search(r'name="([^"]+)"', content_disp)
+        if not name_match:
+            continue
+        field_name = name_match.group(1)
+        filename_match = re.search(r'filename="([^"]*)"', content_disp)
+        filename = filename_match.group(1) if filename_match else None
+        result[field_name] = (filename, value)
+
+    return result
 
 
 class RAGRequestHandler(BaseHTTPRequestHandler):
@@ -143,13 +178,13 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             if user["role"] == "admin":
                 admin_block = """
                 <div class='card'>
-                  <h2>Загрузка документов (только для админа)</h2>
-                  <form method='post' action='/documents/form'>
+                  <h2>Загрузка документов файлом (только для админа)</h2>
+                  <form method='post' action='/documents/form' enctype='multipart/form-data'>
                     <label>Название документа</label>
                     <input name='title' required />
-                    <label>Содержимое документа</label>
-                    <textarea name='content' rows='6' required></textarea>
-                    <button type='submit'>Загрузить документ</button>
+                    <label>Файл документа (txt/md)</label>
+                    <input type='file' name='document_file' accept='.txt,.md,text/plain' required />
+                    <button type='submit'>Загрузить файл</button>
                   </form>
                 </div>
                 """
@@ -179,16 +214,15 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/logout":
-            user = self._current_user()
-            if user:
-                to_delete = [k for k, v in SESSIONS.items() if v == user]
-                for sid in to_delete:
-                    SESSIONS.pop(sid, None)
+            cookie_header = self.headers.get("Cookie", "")
+            cookie = SimpleCookie()
+            cookie.load(cookie_header)
+            session_id = cookie.get("session_id")
+            if session_id:
+                SESSIONS.pop(session_id.value, None)
             self._redirect("/", cookies=["session_id=; Path=/; Max-Age=0; HttpOnly"])
             return
 
-        # Preview tools may open non-root paths (e.g. /index.html, /preview).
-        # Keep UX resilient by redirecting unknown browser paths to the login page.
         self._redirect("/")
 
     def do_POST(self) -> None:  # noqa: N802
@@ -213,20 +247,29 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             if not user or user["role"] != "admin":
                 self._json_response(HTTPStatus.FORBIDDEN, {"error": "admin only"})
                 return
-            payload = self._read_json()
-            title = payload.get("title", "")
-            content = payload.get("content", "")
-            metadata = payload.get("metadata", {})
+
+            content_type = self.headers.get("Content-Type", "")
+            if content_type.startswith("multipart/form-data"):
+                length = int(self.headers.get("Content-Length", "0"))
+                raw_body = self.rfile.read(length) if length else b""
+                fields = _parse_multipart_form_data(content_type, raw_body)
+                title = fields.get("title", (None, b""))[1].decode("utf-8", errors="ignore").strip()
+                file_name, file_bytes = fields.get("document_file", (None, b""))
+                content = file_bytes.decode("utf-8", errors="ignore").strip()
+                metadata = {"upload_type": "file", "filename": file_name or ""}
+            else:
+                payload = self._read_json()
+                title = payload.get("title", "")
+                content = payload.get("content", "")
+                metadata = payload.get("metadata", {})
+
             if not title or not content:
-                self._json_response(HTTPStatus.BAD_REQUEST, {"error": "title/content required"})
+                self._json_response(HTTPStatus.BAD_REQUEST, {"error": "title/content or title/document_file required"})
                 return
 
             doc_id = str(uuid.uuid4())
             chunks = kb.add_document(doc_id, title, content, metadata)
-            self._json_response(
-                HTTPStatus.OK,
-                {"document_id": doc_id, "chunks_created": chunks, "total_chunks": len(kb.chunks)},
-            )
+            self._json_response(HTTPStatus.OK, {"document_id": doc_id, "chunks_created": chunks, "total_chunks": len(kb.chunks)})
             return
 
         if path == "/documents/form":
@@ -234,15 +277,22 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             if not user or user["role"] != "admin":
                 self._html_response(HTTPStatus.FORBIDDEN, render_html("Доступ запрещён", "<h1>Только для админа</h1><a href='/app'>Назад</a>"))
                 return
-            form = self._read_form()
-            title = form.get("title", "")
-            content = form.get("content", "")
+
+            content_type = self.headers.get("Content-Type", "")
+            length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(length) if length else b""
+            fields = _parse_multipart_form_data(content_type, raw_body)
+            title = fields.get("title", (None, b""))[1].decode("utf-8", errors="ignore").strip()
+            file_name, file_bytes = fields.get("document_file", (None, b""))
+            content = file_bytes.decode("utf-8", errors="ignore").strip()
+
             if not title or not content:
-                self._html_response(HTTPStatus.BAD_REQUEST, render_html("Ошибка", "<h1>title/content обязательны</h1><a href='/app'>Назад</a>"))
+                self._html_response(HTTPStatus.BAD_REQUEST, render_html("Ошибка", "<h1>Нужны title и файл документа</h1><a href='/app'>Назад</a>"))
                 return
+
             doc_id = str(uuid.uuid4())
-            chunks = kb.add_document(doc_id, title, content, {"source": "web"})
-            body = render_html("Документ загружен", f"<h1>Документ загружен</h1><p>Чанков создано: <b>{chunks}</b></p><a href='/app'>Назад</a>")
+            chunks = kb.add_document(doc_id, title, content, {"source": "web", "filename": file_name or ""})
+            body = render_html("Документ загружен", f"<h1>Документ загружен</h1><p>Файл: <b>{file_name or 'unknown'}</b></p><p>Чанков создано: <b>{chunks}</b></p><a href='/app'>Назад</a>")
             self._html_response(HTTPStatus.OK, body)
             return
 
@@ -287,10 +337,7 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             top_k = int(form.get("top_k", "4"))
             matches = kb.retrieve(question, top_k=top_k)
             answer = SimpleAnswerGenerator.generate(question, matches)
-            source_items = "".join(
-                f"<li><b>{chunk.title}</b> ({score:.2f})<br/>{chunk.text[:180]}</li>"
-                for chunk, score in matches
-            ) or "<li>Источники не найдены</li>"
+            source_items = "".join(f"<li><b>{chunk.title}</b> ({score:.2f})<br/>{chunk.text[:180]}</li>" for chunk, score in matches) or "<li>Источники не найдены</li>"
             body = render_html(
                 "Ответ",
                 f"""
@@ -306,8 +353,6 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
             self._html_response(HTTPStatus.OK, body)
             return
 
-        # Preview tools may open non-root paths (e.g. /index.html, /preview).
-        # Keep UX resilient by redirecting unknown browser paths to the login page.
         self._redirect("/")
 
 
