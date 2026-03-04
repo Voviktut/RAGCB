@@ -1,0 +1,18 @@
+[project]
+name = "company-rag-kb"
+version = "0.1.0"
+description = "Lightweight RAG knowledge base for internal company documentation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
